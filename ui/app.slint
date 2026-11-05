@@ -1,0 +1,853 @@
+// Interfaz de d20 Calculator: mismas medidas (dp), colores y estructura que la app original.
+import "../assets/fonts/Roboto-Regular.ttf";
+
+export struct Pal {
+    clear-bg: color, clear-fg: color,
+    dice-bg: color, dice-fg: color,
+    modi-bg: color, modi-fg: color,
+    number-bg: color, number-fg: color,
+    operator-bg: color, operator-fg: color,
+    roll-bg: color, roll-fg: color,
+    header-bg: color, header-fg: color,
+    input-bg: color, input-fg: color,
+    menu-bg: color, menu-fg: color,
+    result-bg: color, result-fg: color,
+}
+
+export struct SavedItem { name: string, formula: string }
+
+export global Theme {
+    in property <Pal> p;
+    // Un dp de Android en píxeles lógicos. Cambiarlo escala toda la ventana.
+    out property <length> dp: 1.25px;
+}
+
+// Colores fijos de los diálogos y de la pantalla de ajustes (SettingsTheme / AlertTheme).
+global Dlg {
+    out property <color> bg: #2c2c2c;
+    out property <color> accent: #f89c40;
+    out property <color> bar: #1f1f1f;
+    out property <color> text: #ffffff;
+    out property <color> text2: #ffffffb3;
+}
+
+// Texto de una línea que reduce su cuerpo hasta caber (AutofitTextView).
+component AutoFitText inherits Rectangle {
+    in property <string> text;
+    in property <color> fg;
+    in property <length> max-size;
+    in property <length> min-size;
+    in property <TextHorizontalAlignment> halign: right;
+    clip: true;
+
+    measure := Text {
+        text: root.text;
+        font-size: root.max-size;
+        opacity: 0;
+        wrap: no-wrap;
+    }
+    Text {
+        width: root.width;
+        height: root.height;
+        text: root.text;
+        color: root.fg;
+        font-size: measure.preferred-width > root.width && measure.preferred-width > 0px
+            ? max(root.min-size, root.max-size * (root.width / measure.preferred-width))
+            : root.max-size;
+        horizontal-alignment: root.halign;
+        vertical-alignment: center;
+        wrap: no-wrap;
+    }
+}
+
+// Botón plano de la calculadora, con el efecto de pulsación como el de Android.
+component CalcKey inherits Rectangle {
+    in property <string> label;
+    in property <color> bg;
+    in property <color> fg;
+    in property <length> text-size;
+    callback pressed();
+    background: bg;
+    clip: true;
+
+    Rectangle {
+        background: ta.pressed ? root.fg.with-alpha(0.22) : root.fg.with-alpha(0.0);
+        animate background { duration: 160ms; }
+    }
+    Text {
+        text: root.label;
+        color: root.fg;
+        font-size: root.text-size;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea { clicked => { root.pressed(); } }
+}
+
+// Botón de icono (ImageButton con tinte).
+component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <color> tint;
+    in property <length> icon-size: 24 * Theme.dp;
+    callback clicked();
+    clip: true;
+    Rectangle {
+        background: ta.pressed ? root.tint.with-alpha(0.2) : root.tint.with-alpha(0.0);
+        animate background { duration: 160ms; }
+    }
+    Image {
+        source: root.icon;
+        colorize: root.tint;
+        width: root.icon-size;
+        height: root.icon-size;
+        image-fit: contain;
+    }
+    ta := TouchArea { clicked => { root.clicked(); } }
+}
+
+// Tarjeta modal de los diálogos (AlertDialog con tema oscuro).
+component Modal inherits Rectangle {
+    in property <string> title;
+    in property <string> message;
+    in property <string> positive;
+    in property <string> negative;
+    in property <length> card-width: 304 * Theme.dp;
+    callback accepted();
+    callback dismissed();
+    background: #000000a0;
+
+    TouchArea { clicked => { root.dismissed(); } }
+    Rectangle {
+        width: root.card-width;
+        height: content.preferred-height;
+        background: Dlg.bg;
+        border-radius: 3 * Theme.dp;
+        TouchArea { }
+        content := VerticalLayout {
+            padding: 24 * Theme.dp;
+            spacing: 16 * Theme.dp;
+            if root.title != "": Text {
+                text: root.title;
+                color: Dlg.text;
+                font-size: 20 * Theme.dp;
+                wrap: word-wrap;
+            }
+            if root.message != "": Text {
+                text: root.message;
+                color: Dlg.text2;
+                font-size: 16 * Theme.dp;
+                wrap: word-wrap;
+            }
+            @children
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8 * Theme.dp;
+                if root.negative != "": Rectangle {
+                    width: neg.preferred-width + 24 * Theme.dp;
+                    height: 36 * Theme.dp;
+                    Rectangle {
+                        background: nta.pressed ? Dlg.accent.with-alpha(0.2) : Dlg.accent.with-alpha(0.0);
+                    }
+                    neg := Text {
+                        text: root.negative;
+                        color: Dlg.accent;
+                        font-size: 14 * Theme.dp;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
+                    nta := TouchArea { clicked => { root.dismissed(); } }
+                }
+                if root.positive != "": Rectangle {
+                    width: pos.preferred-width + 24 * Theme.dp;
+                    height: 36 * Theme.dp;
+                    Rectangle {
+                        background: pta.pressed ? Dlg.accent.with-alpha(0.2) : Dlg.accent.with-alpha(0.0);
+                    }
+                    pos := Text {
+                        text: root.positive;
+                        color: Dlg.accent;
+                        font-size: 14 * Theme.dp;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
+                    pta := TouchArea { clicked => { root.accepted(); } }
+                }
+            }
+        }
+    }
+}
+
+// Fila de la lista «Saved»: nombre pequeño, fórmula y deslizar para borrar.
+component SavedRow inherits Rectangle {
+    in property <SavedItem> item;
+    callback activated();
+    callback delete-requested();
+    property <length> dp: Theme.dp;
+    property <length> swipe: 0;
+    height: max(48 * dp, col.preferred-height + 4 * dp);
+    clip: true;
+
+    Rectangle {
+        x: root.swipe;
+        width: parent.width;
+        Rectangle {
+            background: ta.pressed ? Theme.p.menu-fg.with-alpha(0.12) : Theme.p.menu-fg.with-alpha(0.0);
+        }
+        col := VerticalLayout {
+            x: 16 * dp;
+            width: parent.width - 32 * dp;
+            alignment: center;
+            padding-top: 2 * dp;
+            padding-bottom: 2 * dp;
+            if root.item.name != "": Text {
+                text: root.item.name;
+                color: Theme.p.menu-fg;
+                font-size: 12 * dp;
+                overflow: elide;
+            }
+            Text {
+                text: root.item.formula;
+                color: Theme.p.menu-fg;
+                font-size: 21 * dp;
+                overflow: elide;
+            }
+        }
+    }
+    ta := TouchArea {
+        moved => {
+            if (self.pressed) {
+                root.swipe = self.mouse-x - self.pressed-x;
+            }
+        }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.up) {
+                if (abs(root.swipe) > root.width / 3) {
+                    root.delete-requested();
+                } else if (abs(root.swipe) < 6 * dp) {
+                    root.activated();
+                }
+                root.swipe = 0;
+            }
+        }
+    }
+}
+
+component RecentRow inherits Rectangle {
+    in property <string> formula;
+    callback activated();
+    property <length> dp: Theme.dp;
+    height: 48 * dp;
+    Rectangle {
+        background: ta.pressed ? Theme.p.menu-fg.with-alpha(0.12) : Theme.p.menu-fg.with-alpha(0.0);
+    }
+    Text {
+        x: 16 * dp;
+        width: parent.width - 32 * dp;
+        text: root.formula;
+        color: Theme.p.menu-fg;
+        font-size: 21 * dp;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    ta := TouchArea { clicked => { root.activated(); } }
+}
+
+// Cabecera de sección del menú (48 dp, texto de 28 dp, un icono a la derecha).
+component MenuHeader inherits Rectangle {
+    in property <string> title;
+    in property <image> icon;
+    callback icon-clicked();
+    height: 48 * Theme.dp;
+    background: Theme.p.header-bg;
+    Text {
+        x: 16 * Theme.dp;
+        text: root.title;
+        color: Theme.p.header-fg;
+        font-size: 28 * Theme.dp;
+        vertical-alignment: center;
+        height: parent.height;
+    }
+    IconButton {
+        x: parent.width - self.width - 16 * Theme.dp;
+        width: 36 * Theme.dp;
+        height: parent.height;
+        icon: root.icon;
+        tint: Theme.p.header-fg;
+        clicked => { root.icon-clicked(); }
+    }
+}
+
+export component App inherits Window {
+    // --- estado que pinta la lógica (Rust)
+    in property <string> formula;
+    in property <string> result;
+    in property <string> half;
+    in property <string> max;
+    in property <string> detail;
+    in property <bool> show-detail;
+    in property <bool> show-halfmax;
+    in property <bool> dimmed;
+    in property <string> clear-label: "AC";
+    in property <[SavedItem]> saved;
+    in property <[string]> recent;
+    in property <[string]> theme-names;
+    in-out property <int> theme-index;
+    in-out property <bool> sfx-on: true;
+
+    callback key(string);
+    callback switch-pressed();
+    callback save-roll(string);
+    callback saved-activated(int);
+    callback recent-activated(int);
+    callback delete-saved(int);
+    callback clear-recent();
+    callback theme-chosen(int);
+    callback sfx-changed(bool);
+    public function open-menu() { root.menu-open = true; }
+
+    // --- estado de la interfaz
+    property <length> dp: Theme.dp;
+    property <length> win-w: 352 * dp;
+    property <length> win-h: 552 * dp;
+    property <bool> menu-open: false;
+    property <int> dialog: 0; // 1 guardar, 2 ayuda, 3 borrar, 4 tema, 5 acerca de
+    property <bool> settings-open: false;
+    property <int> delete-index: -1;
+    property <string> save-name;
+
+    title: "d20 Calculator";
+    icon: @image-url("../assets/icon.png");
+    default-font-family: "Roboto";
+    min-width: win-w;
+    max-width: win-w;
+    min-height: win-h;
+    max-height: win-h;
+    preferred-width: win-w;
+    preferred-height: win-h;
+    background: Theme.p.input-bg;
+
+    // El teclado funciona siempre: se recupera el foco al arrancar y al cerrar diálogos o ajustes.
+    init => { fs.focus(); }
+    changed dialog => { if (self.dialog == 0) { fs.focus(); } }
+    changed settings-open => { fs.focus(); }
+
+    fs := FocusScope {
+        width: root.width;
+        height: root.height;
+        key-pressed(e) => {
+            if (root.dialog != 0) {
+                if (e.text == Key.Escape) { root.dialog = 0; return accept; }
+                return reject;
+            }
+            if (root.settings-open) {
+                if (e.text == Key.Escape) { root.settings-open = false; return accept; }
+                return reject;
+            }
+            if (e.text == Key.Escape) { root.menu-open = false; return accept; }
+            if (e.text == "m" || e.text == "M") { root.menu-open = !root.menu-open; return accept; }
+            if (e.text == Key.Backspace) { root.key("del"); return accept; }
+            if (e.text == Key.Delete) { root.key("ac"); return accept; }
+            if (e.text == Key.Return) { root.key("roll"); return accept; }
+            if (e.text == "*") { root.key("x"); return accept; }
+            if (e.text == "d" || e.text == "D") { root.key("d"); return accept; }
+            if (e.text == "%") { root.key("%"); return accept; }
+            if (e.text == "0" || e.text == "1" || e.text == "2" || e.text == "3" || e.text == "4"
+                || e.text == "5" || e.text == "6" || e.text == "7" || e.text == "8" || e.text == "9"
+                || e.text == "+" || e.text == "-" || e.text == "/" || e.text == "x" || e.text == "("
+                || e.text == ")") {
+                root.key(e.text);
+                return accept;
+            }
+            return reject;
+        }
+
+        // ---------------------------------------------------------- calculadora (panel 2)
+        calc := Rectangle {
+            x: 0;
+            width: root.width;
+            height: root.height;
+            background: Theme.p.input-bg;
+
+            // barra de entrada (64 dp)
+            Rectangle {
+                y: 0;
+                height: 64 * dp;
+                background: Theme.p.input-bg;
+                IconButton {
+                    x: 8 * dp;
+                    y: 4 * dp;
+                    width: 40 * dp;
+                    height: 56 * dp;
+                    icon: @image-url("../assets/icons/menu.svg");
+                    tint: Theme.p.input-fg;
+                    clicked => { root.menu-open = true; }
+                }
+                IconButton {
+                    x: 52 * dp;
+                    y: 4 * dp;
+                    width: 40 * dp;
+                    height: 56 * dp;
+                    icon: @image-url("../assets/icons/save.svg");
+                    tint: Theme.p.input-fg;
+                    clicked => { root.save-name = ""; root.dialog = 1; }
+                }
+                AutoFitText {
+                    x: 100 * dp;
+                    y: 4 * dp;
+                    width: parent.width - 116 * dp;
+                    height: 56 * dp;
+                    text: root.formula;
+                    fg: Theme.p.input-fg;
+                    max-size: 34 * dp;
+                    min-size: 8 * dp;
+                }
+            }
+
+            // barra de resultado (96 dp)
+            rbar := Rectangle {
+                y: 64 * dp;
+                height: 96 * dp;
+                background: Theme.p.result-bg;
+                property <color> fg: Theme.p.result-fg.with-alpha(root.dimmed ? 0.25 : 1.0);
+
+                IconButton {
+                    x: 16 * dp;
+                    y: 4 * dp;
+                    width: 40 * dp;
+                    height: 88 * dp;
+                    icon: @image-url("../assets/icons/swap.svg");
+                    tint: Theme.p.result-fg;
+                    clicked => { root.switch-pressed(); }
+                }
+                res := Text {
+                    x: parent.width - 16 * dp - self.width;
+                    y: 4 * dp;
+                    height: 88 * dp;
+                    text: root.result;
+                    color: rbar.fg;
+                    font-size: 64 * dp;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                }
+                AutoFitText {
+                    visible: root.show-detail;
+                    x: 64 * dp;
+                    y: 4 * dp;
+                    width: res.x - 4 * dp - 64 * dp;
+                    height: 88 * dp;
+                    text: root.detail;
+                    fg: rbar.fg;
+                    max-size: 21 * dp;
+                    min-size: 8 * dp;
+                }
+                HorizontalLayout {
+                    visible: root.show-halfmax;
+                    x: 64 * dp;
+                    y: 4 * dp;
+                    height: 88 * dp;
+                    width: res.x - 64 * dp;
+                    alignment: start;
+                    Text {
+                        text: "H\nA\nL\nF";
+                        color: rbar.fg;
+                        font-size: 12 * dp;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { width: 8 * dp; }
+                    Text {
+                        text: root.half;
+                        color: rbar.fg;
+                        font-size: 28 * dp;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { width: 16 * dp; }
+                    Text {
+                        text: "M\nA\nX";
+                        color: rbar.fg;
+                        font-size: 12 * dp;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { width: 8 * dp; }
+                    Text {
+                        text: root.max;
+                        color: rbar.fg;
+                        font-size: 28 * dp;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // teclado: 4 columnas x 7 filas (la última pareja de filas pesa el doble)
+            Rectangle {
+                y: 160 * dp;
+                height: parent.height - 160 * dp;
+                property <length> cw: self.width / 4;
+                property <length> rh: self.height / 7;
+
+                CalcKey { x: 0; y: 0; width: parent.cw; height: parent.rh; label: "d%"; bg: Theme.p.dice-bg; fg: Theme.p.dice-fg; text-size: 22 * dp; pressed => { root.key("1d100"); } }
+                CalcKey { x: parent.cw; y: 0; width: parent.cw; height: parent.rh; label: "dx"; bg: Theme.p.dice-bg; fg: Theme.p.dice-fg; text-size: 22 * dp; pressed => { root.key("1n"); } }
+                CalcKey { x: parent.cw * 2; y: 0; width: parent.cw; height: parent.rh; label: "del"; bg: Theme.p.clear-bg; fg: Theme.p.clear-fg; text-size: 22 * dp; pressed => { root.key("del"); } }
+                CalcKey { x: parent.cw * 3; y: 0; width: parent.cw; height: parent.rh; label: root.clear-label; bg: Theme.p.clear-bg; fg: Theme.p.clear-fg; text-size: 22 * dp; pressed => { root.key("ac"); } }
+
+                CalcKey { x: 0; y: parent.rh; width: parent.cw; height: parent.rh; label: "d4"; bg: Theme.p.dice-bg; fg: Theme.p.dice-fg; text-size: 22 * dp; pressed => { root.key("1d4"); } }
+                CalcKey { x: parent.cw; y: parent.rh; width: parent.cw; height: parent.rh; label: "d6"; bg: Theme.p.dice-bg; fg: Theme.p.dice-fg; text-size: 22 * dp; pressed => { root.key("1d6"); } }
+                CalcKey { x: parent.cw * 2; y: parent.rh; width: parent.cw; height: parent.rh; label: "d8"; bg: Theme.p.dice-bg; fg: Theme.p.dice-fg; text-size: 22 * dp; pressed => { root.key("1d8"); } }
+                CalcKey { x: parent.cw * 3; y: parent.rh; width: parent.cw; height: parent.rh; label: "\u{00F7}"; bg: Theme.p.operator-bg; fg: Theme.p.operator-fg; text-size: 32 * dp; pressed => { root.key("/"); } }
+
+                CalcKey { x: 0; y: parent.rh * 2; width: parent.cw; height: parent.rh; label: "d10"; bg: Theme.p.dice-bg; fg: Theme.p.dice-fg; text-size: 22 * dp; pressed => { root.key("1d10"); } }
+                CalcKey { x: parent.cw; y: parent.rh * 2; width: parent.cw; height: parent.rh; label: "d12"; bg: Theme.p.dice-bg; fg: Theme.p.dice-fg; text-size: 22 * dp; pressed => { root.key("1d12"); } }
+                CalcKey { x: parent.cw * 2; y: parent.rh * 2; width: parent.cw; height: parent.rh; label: "d20"; bg: Theme.p.dice-bg; fg: Theme.p.dice-fg; text-size: 22 * dp; pressed => { root.key("1d20"); } }
+                CalcKey { x: parent.cw * 3; y: parent.rh * 2; width: parent.cw; height: parent.rh; label: "\u{00D7}"; bg: Theme.p.operator-bg; fg: Theme.p.operator-fg; text-size: 32 * dp; pressed => { root.key("x"); } }
+
+                CalcKey { x: 0; y: parent.rh * 3; width: parent.cw; height: parent.rh; label: "7"; bg: Theme.p.number-bg; fg: Theme.p.number-fg; text-size: 24 * dp; pressed => { root.key("7"); } }
+                CalcKey { x: parent.cw; y: parent.rh * 3; width: parent.cw; height: parent.rh; label: "8"; bg: Theme.p.number-bg; fg: Theme.p.number-fg; text-size: 24 * dp; pressed => { root.key("8"); } }
+                CalcKey { x: parent.cw * 2; y: parent.rh * 3; width: parent.cw; height: parent.rh; label: "9"; bg: Theme.p.number-bg; fg: Theme.p.number-fg; text-size: 24 * dp; pressed => { root.key("9"); } }
+                CalcKey { x: parent.cw * 3; y: parent.rh * 3; width: parent.cw; height: parent.rh; label: "\u{2013}"; bg: Theme.p.operator-bg; fg: Theme.p.operator-fg; text-size: 32 * dp; pressed => { root.key("-"); } }
+
+                CalcKey { x: 0; y: parent.rh * 4; width: parent.cw; height: parent.rh; label: "4"; bg: Theme.p.number-bg; fg: Theme.p.number-fg; text-size: 24 * dp; pressed => { root.key("4"); } }
+                CalcKey { x: parent.cw; y: parent.rh * 4; width: parent.cw; height: parent.rh; label: "5"; bg: Theme.p.number-bg; fg: Theme.p.number-fg; text-size: 24 * dp; pressed => { root.key("5"); } }
+                CalcKey { x: parent.cw * 2; y: parent.rh * 4; width: parent.cw; height: parent.rh; label: "6"; bg: Theme.p.number-bg; fg: Theme.p.number-fg; text-size: 24 * dp; pressed => { root.key("6"); } }
+                CalcKey { x: parent.cw * 3; y: parent.rh * 4; width: parent.cw; height: parent.rh; label: "+"; bg: Theme.p.operator-bg; fg: Theme.p.operator-fg; text-size: 32 * dp; pressed => { root.key("+"); } }
+
+                CalcKey { x: 0; y: parent.rh * 5; width: parent.cw; height: parent.rh; label: "1"; bg: Theme.p.number-bg; fg: Theme.p.number-fg; text-size: 24 * dp; pressed => { root.key("1"); } }
+                CalcKey { x: parent.cw; y: parent.rh * 5; width: parent.cw; height: parent.rh; label: "2"; bg: Theme.p.number-bg; fg: Theme.p.number-fg; text-size: 24 * dp; pressed => { root.key("2"); } }
+                CalcKey { x: parent.cw * 2; y: parent.rh * 5; width: parent.cw; height: parent.rh; label: "3"; bg: Theme.p.number-bg; fg: Theme.p.number-fg; text-size: 24 * dp; pressed => { root.key("3"); } }
+
+                CalcKey { x: 0; y: parent.rh * 6; width: parent.cw; height: parent.rh; label: "0"; bg: Theme.p.number-bg; fg: Theme.p.number-fg; text-size: 24 * dp; pressed => { root.key("0"); } }
+                CalcKey { x: parent.cw; y: parent.rh * 6; width: parent.cw; height: parent.rh; label: "("; bg: Theme.p.modi-bg; fg: Theme.p.modi-fg; text-size: 22 * dp; pressed => { root.key("("); } }
+                CalcKey { x: parent.cw * 2; y: parent.rh * 6; width: parent.cw; height: parent.rh; label: ")"; bg: Theme.p.modi-bg; fg: Theme.p.modi-fg; text-size: 22 * dp; pressed => { root.key(")"); } }
+
+                Rectangle {
+                    x: parent.cw * 3;
+                    y: parent.rh * 5;
+                    width: parent.cw;
+                    height: parent.rh * 2;
+                    background: Theme.p.roll-bg;
+                    clip: true;
+                    Rectangle {
+                        background: roll-ta.pressed ? Theme.p.roll-fg.with-alpha(0.22) : Theme.p.roll-fg.with-alpha(0.0);
+                        animate background { duration: 160ms; }
+                    }
+                    Image {
+                        source: @image-url("../assets/roll_d20.png");
+                        colorize: Theme.p.roll-fg;
+                        width: 36 * dp;
+                        height: 36 * dp;
+                        image-fit: contain;
+                    }
+                    roll-ta := TouchArea { clicked => { root.key("roll"); } }
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------- menú lateral (encima de la calculadora)
+        // velo: oscurece la calculadora y, al tocarlo, cierra el menú
+        Rectangle {
+            background: #00000070;
+            opacity: root.menu-open ? 1 : 0;
+            animate opacity { duration: 230ms; easing: ease-out; }
+            TouchArea {
+                enabled: root.menu-open;
+                clicked => { root.menu-open = false; }
+            }
+        }
+        Rectangle {
+            x: root.menu-open ? 0px : -290 * dp;
+            animate x { duration: 230ms; easing: ease-out; }
+            width: 280 * dp;
+            height: root.height;
+            background: Theme.p.menu-bg;
+            TouchArea { }
+            Rectangle {
+                x: parent.width;
+                width: 6 * dp;
+                opacity: root.menu-open ? 1 : 0;
+                background: @linear-gradient(90deg, #00000050 0%, #00000000 100%);
+            }
+
+            // «Saved» pesa 3, «Recent» pesa 2, y debajo la barra de 48 dp.
+            property <length> body: root.height - 48 * dp;
+            Rectangle {
+                y: 0;
+                height: parent.body * 3 / 5;
+                clip: true;
+                MenuHeader {
+                    y: 0;
+                    width: parent.width;
+                    title: "Saved";
+                    icon: @image-url("../assets/icons/help.svg");
+                    icon-clicked => { root.dialog = 2; }
+                }
+                Flickable {
+                    y: 48 * dp;
+                    height: parent.height - 48 * dp;
+                    content-height: saved-col.preferred-height;
+                    saved-col := VerticalLayout {
+                        alignment: start;
+                        for item[i] in root.saved: SavedRow {
+                            item: item;
+                            activated => { root.menu-open = false; root.saved-activated(i); }
+                            delete-requested => { root.delete-index = i; root.dialog = 3; }
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                y: parent.body * 3 / 5;
+                height: parent.body * 2 / 5;
+                clip: true;
+                MenuHeader {
+                    y: 0;
+                    width: parent.width;
+                    title: "Recent";
+                    icon: @image-url("../assets/icons/delete.svg");
+                    icon-clicked => { root.clear-recent(); }
+                }
+                Flickable {
+                    y: 48 * dp;
+                    height: parent.height - 48 * dp;
+                    content-height: recent-col.preferred-height;
+                    recent-col := VerticalLayout {
+                        alignment: start;
+                        for r[i] in root.recent: RecentRow {
+                            formula: r;
+                            activated => { root.menu-open = false; root.recent-activated(i); }
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                y: parent.body;
+                height: 48 * dp;
+                background: Theme.p.header-bg;
+                IconButton {
+                    x: 16 * dp;
+                    width: 36 * dp;
+                    height: parent.height;
+                    icon: @image-url("../assets/icons/info.svg");
+                    tint: Theme.p.header-fg;
+                    clicked => { root.dialog = 5; }
+                }
+                IconButton {
+                    x: parent.width - self.width - 16 * dp;
+                    width: 36 * dp;
+                    height: parent.height;
+                    icon: @image-url("../assets/icons/settings.svg");
+                    tint: Theme.p.header-fg;
+                    clicked => { root.settings-open = true; }
+                }
+            }
+        }
+
+        // ---------------------------------------------------- pantalla de ajustes
+        if root.settings-open: Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            background: Dlg.bg;
+            TouchArea { }
+            Rectangle {
+                y: 0;
+                height: 56 * dp;
+                background: Dlg.bar;
+                IconButton {
+                    x: 4 * dp;
+                    width: 48 * dp;
+                    height: parent.height;
+                    icon: @image-url("../assets/icons/arrow_back.svg");
+                    tint: #ffffff;
+                    clicked => { root.settings-open = false; }
+                }
+                Text {
+                    x: 72 * dp;
+                    text: "Settings";
+                    color: #ffffff;
+                    font-size: 20 * dp;
+                    vertical-alignment: center;
+                    height: parent.height;
+                }
+            }
+            VerticalLayout {
+                y: 56 * dp;
+                alignment: start;
+                Text {
+                    text: "Audio";
+                    color: Dlg.accent;
+                    font-size: 14 * dp;
+                    height: 40 * dp;
+                    x: 16 * dp;
+                    vertical-alignment: bottom;
+                }
+                Rectangle {
+                    height: 72 * dp;
+                    Rectangle {
+                        background: sfx-ta.pressed ? #ffffff20 : #ffffff00;
+                    }
+                    VerticalLayout {
+                        x: 16 * dp;
+                        width: parent.width - 80 * dp;
+                        alignment: center;
+                        Text { text: "Sound Effects"; color: Dlg.text; font-size: 16 * dp; }
+                        Text { text: "Enable/disable sound effects"; color: Dlg.text2; font-size: 14 * dp; }
+                    }
+                    Rectangle {
+                        x: parent.width - 16 * dp - self.width;
+                        width: 18 * dp;
+                        height: 18 * dp;
+                        border-radius: 2 * dp;
+                        border-width: 2 * dp;
+                        border-color: root.sfx-on ? Dlg.accent : #ffffffb3;
+                        background: root.sfx-on ? Dlg.accent : #00000000;
+                        Image {
+                            visible: root.sfx-on;
+                            source: @image-url("../assets/icons/check.svg");
+                            colorize: Dlg.bg;
+                            width: 18 * dp;
+                            height: 18 * dp;
+                        }
+                    }
+                    sfx-ta := TouchArea {
+                        clicked => { root.sfx-on = !root.sfx-on; root.sfx-changed(root.sfx-on); }
+                    }
+                }
+                Text {
+                    text: "Appearance";
+                    color: Dlg.accent;
+                    font-size: 14 * dp;
+                    height: 40 * dp;
+                    x: 16 * dp;
+                    vertical-alignment: bottom;
+                }
+                Rectangle {
+                    height: 72 * dp;
+                    Rectangle {
+                        background: theme-ta.pressed ? #ffffff20 : #ffffff00;
+                    }
+                    VerticalLayout {
+                        x: 16 * dp;
+                        width: parent.width - 32 * dp;
+                        alignment: center;
+                        Text { text: "Theme"; color: Dlg.text; font-size: 16 * dp; }
+                        Text { text: root.theme-names[root.theme-index]; color: Dlg.text2; font-size: 14 * dp; }
+                    }
+                    theme-ta := TouchArea { clicked => { root.dialog = 4; } }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------------- diálogos
+        if root.dialog == 1: Modal {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            title: "Save Roll";
+            positive: "SAVE";
+            negative: "CANCEL";
+            accepted => { root.dialog = 0; root.save-roll(root.save-name); }
+            dismissed => { root.dialog = 0; }
+            Rectangle {
+                height: 48 * dp;
+                name-input := TextInput {
+                    x: 0;
+                    y: 10 * dp;
+                    width: parent.width;
+                    height: 30 * dp;
+                    text <=> root.save-name;
+                    font-size: 16 * dp;
+                    color: Dlg.text;
+                    single-line: true;
+                    accepted => { root.dialog = 0; root.save-roll(root.save-name); }
+                    init => { self.focus(); }
+                }
+                if root.save-name == "": Text {
+                    x: 0;
+                    y: 10 * dp;
+                    text: "Name";
+                    color: #ffffff80;
+                    font-size: 16 * dp;
+                    height: 30 * dp;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    y: 42 * dp;
+                    height: 2 * dp;
+                    background: Dlg.accent;
+                }
+            }
+        }
+        if root.dialog == 2: Modal {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            title: "Help";
+            message: "Delete items by dragging them left or right.";
+            positive: "GOT IT";
+            accepted => { root.dialog = 0; }
+            dismissed => { root.dialog = 0; }
+        }
+        if root.dialog == 3: Modal {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            message: "Are you sure you want to delete this roll?";
+            positive: "DELETE";
+            negative: "CANCEL";
+            accepted => { root.dialog = 0; root.delete-saved(root.delete-index); }
+            dismissed => { root.dialog = 0; }
+        }
+        if root.dialog == 5: Modal {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            title: "d20 Calculator";
+            message: "Dice calculator written in Rust.";
+            positive: "GOT IT";
+            accepted => { root.dialog = 0; }
+            dismissed => { root.dialog = 0; }
+        }
+        if root.dialog == 4: Modal {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            title: "Select Theme";
+            negative: "CANCEL";
+            dismissed => { root.dialog = 0; }
+            VerticalLayout {
+                spacing: 0;
+                for name[i] in root.theme-names: Rectangle {
+                    height: 48 * dp;
+                    Rectangle {
+                        background: rta.pressed ? #ffffff20 : #ffffff00;
+                    }
+                    Image {
+                        x: 0;
+                        y: (parent.height - self.height) / 2;
+                        width: 24 * dp;
+                        height: 24 * dp;
+                        source: i == root.theme-index ? @image-url("../assets/icons/radio_off.svg") : @image-url("../assets/icons/radio_on.svg");
+                        colorize: i == root.theme-index ? Dlg.accent : #ffffffb3;
+                    }
+                    Text {
+                        x: 40 * dp;
+                        text: name;
+                        color: Dlg.text;
+                        font-size: 16 * dp;
+                        vertical-alignment: center;
+                        height: parent.height;
+                    }
+                    rta := TouchArea {
+                        clicked => { root.theme-index = i; root.dialog = 0; root.theme-chosen(i); }
+                    }
+                }
+            }
+        }
+    }
+}

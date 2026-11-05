@@ -1,0 +1,3 @@
+# CRT enlazado de forma estática: el .exe no necesita el runtime de Visual C++ instalado.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
